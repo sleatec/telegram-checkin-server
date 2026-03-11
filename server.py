@@ -7,7 +7,8 @@ import sqlite3
 app = Flask(__name__)
 CORS(app)
 
-BOT_TOKEN = "8515355521:AAHoDAzaqN1cO_OFu-5feUAKXz65kDCuzxo"
+import os
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 
 @app.route("/")
@@ -197,3 +198,4 @@ def scan():
 
 if __name__ == "__main__":
     app.run(port=5000)
+
