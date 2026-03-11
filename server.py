@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from openpyxl import Workbook
 import requests
 import sqlite3
@@ -10,7 +11,11 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-BOT_TOKEN = "DEIN_BOT_TOKEN"
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+
+
+def jetzt_lokal():
+    return datetime.now(ZoneInfo("Europe/Berlin"))
 
 
 @app.route("/")
@@ -50,6 +55,7 @@ def status():
 
 @app.route("/scan", methods=["POST"])
 def scan():
+
     daten = request.json
 
     aktion = daten.get("aktion", "").strip()
@@ -60,6 +66,7 @@ def scan():
     # -------------------------------------------------
     # Arbeitsplatz Scan
     # -------------------------------------------------
+
     if aktion == "Arbeitsplatz":
 
         if not qr_code.startswith("DKL_"):
@@ -89,8 +96,9 @@ def scan():
             })
 
         arbeitsplatz = qr_code.replace("DKL_", "").strip()
-        datum = datetime.now().strftime("%d.%m.%Y")
-        uhrzeit = datetime.now().strftime("%H:%M:%S")
+
+        datum = jetzt_lokal().strftime("%d.%m.%Y")
+        uhrzeit = jetzt_lokal().strftime("%H:%M:%S")
 
         cursor.execute("""
             INSERT INTO arbeitsplatz (datum, uhrzeit, mitarbeiter_id, telegram_id, arbeitsplatz)
@@ -110,13 +118,13 @@ def scan():
             }
         )
 
-        print("Arbeitsplatz gespeichert:", arbeitsplatz, mitarbeiter_id)
-
         return jsonify({"status": "ok"})
+
 
     # -------------------------------------------------
     # Arbeitszeit Scan
     # -------------------------------------------------
+
     if "_" in qr_code:
         return jsonify({
             "status": "fehler",
@@ -130,13 +138,13 @@ def scan():
     except:
         return jsonify({"status": "fehler", "meldung": "QR-Code ungültig"})
 
-    jetzt = int(datetime.now().timestamp())
+    jetzt = int(jetzt_lokal().timestamp())
 
     if abs(jetzt - zeitfenster) > 60:
         return jsonify({"status": "fehler", "meldung": "QR-Code abgelaufen"})
 
-    datum = datetime.now().strftime("%d.%m.%Y")
-    uhrzeit = datetime.now().strftime("%H:%M:%S")
+    datum = jetzt_lokal().strftime("%d.%m.%Y")
+    uhrzeit = jetzt_lokal().strftime("%H:%M:%S")
 
     conn = sqlite3.connect("baustelle.db")
     cursor = conn.cursor()
@@ -152,7 +160,9 @@ def scan():
     result = cursor.fetchone()
     letzte_aktion = result[0] if result else None
 
+
     # Sicherheitslogik
+
     if aktion == "Start" and letzte_aktion == "Start":
         conn.close()
         return jsonify({
@@ -166,6 +176,7 @@ def scan():
             "status": "fehler",
             "meldung": "Feierabend ohne Start nicht möglich"
         })
+
 
     cursor.execute("""
         INSERT INTO anwesenheit (datum, uhrzeit, mitarbeiter_id, telegram_id, aktion, baustelle)
@@ -185,13 +196,12 @@ def scan():
         }
     )
 
-    print("Arbeitszeit gespeichert:", aktion, baustelle, mitarbeiter_id)
-
     return jsonify({"status": "ok"})
 
 
 @app.route("/debug")
 def debug():
+
     conn = sqlite3.connect("baustelle.db")
     cursor = conn.cursor()
 
@@ -210,33 +220,52 @@ def debug():
 
 @app.route("/export")
 def export_excel():
+
     conn = sqlite3.connect("baustelle.db")
     cursor = conn.cursor()
 
+    # Anwesenheit laden
     cursor.execute("""
         SELECT datum, uhrzeit, mitarbeiter_id, telegram_id, aktion, baustelle
         FROM anwesenheit
         ORDER BY id
     """)
+    anwesenheit_rows = cursor.fetchall()
 
-    rows = cursor.fetchall()
+    # Arbeitsplatz laden
+    cursor.execute("""
+        SELECT datum, uhrzeit, mitarbeiter_id, telegram_id, arbeitsplatz
+        FROM arbeitsplatz
+        ORDER BY id
+    """)
+    arbeitsplatz_rows = cursor.fetchall()
+
     conn.close()
 
     wb = Workbook()
-    ws = wb.active
-    ws.title = "Anwesenheit"
 
-    ws.append(["Datum", "Uhrzeit", "Mitarbeiter ID", "Telegram ID", "Aktion", "Baustelle"])
+    # Blatt 1
+    ws1 = wb.active
+    ws1.title = "Anwesenheit"
+    ws1.append(["Datum","Uhrzeit","Mitarbeiter ID","Telegram ID","Aktion","Baustelle"])
 
-    for row in rows:
-        ws.append(row)
+    for row in anwesenheit_rows:
+        ws1.append(row)
+
+    # Blatt 2
+    ws2 = wb.create_sheet(title="Arbeitsplatz")
+    ws2.append(["Datum","Uhrzeit","Mitarbeiter ID","Telegram ID","Arbeitsplatz"])
+
+    for row in arbeitsplatz_rows:
+        ws2.append(row)
 
     buffer = io.BytesIO()
     wb.save(buffer)
     buffer.seek(0)
 
-    zeitstempel = datetime.now().strftime("%Y-%m-%d_%H-%M")
-    dateiname = f"Anwesenheit_DKL_{zeitstempel}.xlsx"
+    zeitstempel = jetzt_lokal().strftime("%Y-%m-%d_%H-%M")
+
+    dateiname = f"Baustelle_DKL_Export_{zeitstempel}.xlsx"
 
     return send_file(
         buffer,
@@ -247,5 +276,10 @@ def export_excel():
 
 
 if __name__ == "__main__":
+
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
