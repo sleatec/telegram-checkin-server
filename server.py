@@ -1,14 +1,16 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from datetime import datetime
+from openpyxl import Workbook
 import requests
 import sqlite3
+import io
+import os
 
 app = Flask(__name__)
 CORS(app)
 
-import os
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+BOT_TOKEN = "DEIN_BOT_TOKEN"
 
 
 @app.route("/")
@@ -18,7 +20,6 @@ def startseite():
 
 @app.route("/status", methods=["POST"])
 def status():
-
     daten = request.json
     mitarbeiter_id = daten.get("mitarbeiter_id", "").strip()
 
@@ -49,7 +50,6 @@ def status():
 
 @app.route("/scan", methods=["POST"])
 def scan():
-
     daten = request.json
 
     aktion = daten.get("aktion", "").strip()
@@ -60,7 +60,6 @@ def scan():
     # -------------------------------------------------
     # Arbeitsplatz Scan
     # -------------------------------------------------
-
     if aktion == "Arbeitsplatz":
 
         if not qr_code.startswith("DKL_"):
@@ -90,7 +89,6 @@ def scan():
             })
 
         arbeitsplatz = qr_code.replace("DKL_", "").strip()
-
         datum = datetime.now().strftime("%d.%m.%Y")
         uhrzeit = datetime.now().strftime("%H:%M:%S")
 
@@ -112,14 +110,13 @@ def scan():
             }
         )
 
-        print("Arbeitsplatz gespeichert:", arbeitsplatz)
+        print("Arbeitsplatz gespeichert:", arbeitsplatz, mitarbeiter_id)
 
         return jsonify({"status": "ok"})
 
     # -------------------------------------------------
     # Arbeitszeit Scan
     # -------------------------------------------------
-
     if "_" in qr_code:
         return jsonify({
             "status": "fehler",
@@ -155,10 +152,7 @@ def scan():
     result = cursor.fetchone()
     letzte_aktion = result[0] if result else None
 
-    # -------------------------
     # Sicherheitslogik
-    # -------------------------
-
     if aktion == "Start" and letzte_aktion == "Start":
         conn.close()
         return jsonify({
@@ -191,15 +185,67 @@ def scan():
         }
     )
 
-    print("Arbeitszeit gespeichert:", aktion, baustelle)
+    print("Arbeitszeit gespeichert:", aktion, baustelle, mitarbeiter_id)
 
     return jsonify({"status": "ok"})
 
 
-import os
+@app.route("/debug")
+def debug():
+    conn = sqlite3.connect("baustelle.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT datum, uhrzeit, mitarbeiter_id, telegram_id, aktion, baustelle
+        FROM anwesenheit
+        ORDER BY id DESC
+        LIMIT 20
+    """)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return jsonify(rows)
+
+
+@app.route("/export")
+def export_excel():
+    conn = sqlite3.connect("baustelle.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT datum, uhrzeit, mitarbeiter_id, telegram_id, aktion, baustelle
+        FROM anwesenheit
+        ORDER BY id
+    """)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Anwesenheit"
+
+    ws.append(["Datum", "Uhrzeit", "Mitarbeiter ID", "Telegram ID", "Aktion", "Baustelle"])
+
+    for row in rows:
+        ws.append(row)
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    zeitstempel = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    dateiname = f"Anwesenheit_DKL_{zeitstempel}.xlsx"
+
+    return send_file(
+        buffer,
+        as_attachment=True,
+        download_name=dateiname,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
-
